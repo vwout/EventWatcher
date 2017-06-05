@@ -66,7 +66,9 @@ local LuupRestart = os.time()      -- restart time
 
 local socket   = require "socket" 
 local ssl      = require "ssl"
-local url       = require "socket.url"
+local url      = require "socket.url"
+local ltn12    = require "ltn12"
+local http     = require "socket.http"
 local library  = require "L_EventWatcher2"
 
 local cli     = library.cli()
@@ -96,6 +98,11 @@ local systemPollMinutes = 2  -- update system stats every X MINUTES
 local pollInterval = 5      -- poll the HTTPS client queue every X SECONDS
 local logDirectory          -- log file directory
 local syslogInfo            -- syslog IP:PORT
+local InfluxDb = {
+    Url         = "",       -- Optional InfluxDB server url: http://username:password@server:port
+    Database    = "",
+    Measurement = ""
+  }
 
 local cacheSize             -- length of event storage cache
 local watchCategories        -- which category of devices to watch
@@ -182,7 +189,7 @@ local function weeknum (time)           -- returns week number of given time (or
     return math.floor((time or os.time() ) / weekSeconds)
 end
 
-local function event (time, devNo, name, var, arg)    -- constructor and formatter for event types
+local function event (time, devNo, service, name, var, arg)    -- constructor and formatter for event types
   local function format (e) 
     local ms = math.floor (1000 * (e.time % 1)) 
     return ('%s.%03d, %s, %3d, %s, %s, %s, %s\n'):format (os.date ("%Y-%m-%d %H:%M:%S",e.time), ms,
@@ -191,6 +198,23 @@ local function event (time, devNo, name, var, arg)    -- constructor and formatt
   local function syslogFormat (e) 
     return ('%s [%03d] %s, %s = %s (%s)'):format (e.symbol, e.devNo or 0, devName(e.devNo,nil,'"'), e.name or '?', e.var or '?', e.arg or '') 
   end 
+  local function sendInfluxDB (e)
+    local req_url  = ("%s/write?db=%s&precision=ms"):format(InfluxDb.Url, InfluxDb.Database)
+    local req_body = ("%s,device_no=%d,service=%s %s=%s %s"):format(InfluxDb.Measurement, e.devNo, service or "?", e.name or 'value', e.var, math.floor(e.time * 1000))
+    
+    local res, code, response_headers, status = http.request{
+        url = req_url,
+        --sink = ltn12.sink.table(response_body),
+        headers = {
+          --["Content-Type"] = "text/xml",
+          ["Content-Length"] = tostring(req_body:len())
+        },
+        source = ltn12.source.string(req_body),
+        method = "POST"
+    }
+    debug("Log to InfluxDB: " .. req_url .. " " .. req_body .. ": result: " .. code)
+  end
+  
   eventID = eventID + 1
   local index = eventID % cacheSize + 1
   HISTORY[index] = HISTORY[index] or {}     -- reuse table, or create new
@@ -205,6 +229,10 @@ local function event (time, devNo, name, var, arg)    -- constructor and formatt
   
   if syslog then   -- also log to syslog server
     syslog:send (syslogFormat (e)) 
+  end
+  
+  if InfluxDb.Url ~= '' then
+    sendInfluxDB(e)
   end
   
   if logDirectory ~= '' then               -- also log to file
@@ -225,13 +253,13 @@ function eventBlog (e)
 --  set ('jsonString', json_string)
   local timestamp = e.LocalTimestamp or socket.gettime() or os.time()    -- gets either the provided time OR the current system time
   set ('Timestamp', os.date ("%a %H:%M", timestamp))            -- say when this happened
-  event (timestamp, e.DeviceID, e.Description, e.Code, e.Argument) 
+  event (timestamp, e.DeviceID, nil, e.Description, e.Code, e.Argument) 
 end
 
 -- blog watched variables
 --function watchBlog (lul_device, lul_service, lul_variable, lul_value_old, lul_value_new)
-function watchBlog (lul_device, _, lul_variable, _, lul_value_new)
-  event (nil, lul_device, lul_variable, lul_value_new) 
+function watchBlog (lul_device, lul_service, lul_variable, _, lul_value_new)
+  event (nil, lul_device, lul_service, lul_variable, lul_value_new) 
 end
 
 
@@ -1334,12 +1362,15 @@ function init (lul_device)
   SSL_params.key          = uiVar ("ServerKeyFile",          "/eventWatcher/EventWatcher.key")
   SSL_params.certificate  = uiVar ("ServerCertificateFile",  "/eventWatcher/EventWatcher.crt")
   syslogInfo              = uiVar ("Syslog",                "")
+  InfluxDb.Url            = uiVar ("InfluxDB_Url",          "")
+  InfluxDb.Database       = uiVar ("InfluxDB_Database",     "")
+  InfluxDb.Measurement    = uiVar ("InfluxDB_Measurement",  "")
   logDirectory            = uiVar ("LogDirectory",          "")
-  watchCategories          = uiVar ("WatchCategories",        "XYSM")          -- watch these by default
-  cacheSize               = uiVar ("CacheSize",          1000, 200, 2000)
-  debugOn                 = uiVar ("Debug", "0") ~= "0"
-  extrasFile              = uiVar ("ExtraVariablesFile",   "")     -- list of extra variables to watch
-  excludeFile             = uiVar ("ExcludeVariablesFile", "")     -- list of extra variables to exclude
+  watchCategories         = uiVar ("WatchCategories",       "XYSM")          -- watch these by default
+  cacheSize               = uiVar ("CacheSize",             1000, 200, 2000)
+  debugOn                 = uiVar ("Debug",                 "0") ~= "0"
+  extrasFile              = uiVar ("ExtraVariablesFile",    "")     -- list of extra variables to watch
+  excludeFile             = uiVar ("ExcludeVariablesFile",  "")     -- list of extra variables to exclude
       
 --  gviz.setKey "|itsd>#iuuqt;00xxx/hpphmf/dpn0ktbqj#|ttfuPoMpbeDbmmcbdl|eEbubUbcmf|xDibsuXsbqqfs|uuzqf>#ufyu0kbwbtdsjqu#|hhpphmf|wwjtvbmj{bujpo"
 
