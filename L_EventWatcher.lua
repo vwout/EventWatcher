@@ -199,8 +199,11 @@ local function event (time, devNo, service, name, var, arg)    -- constructor an
     return ('%s [%03d] %s, %s = %s (%s)'):format (e.symbol, e.devNo or 0, devName(e.devNo,nil,'"'), e.name or '?', e.var or '?', e.arg or '') 
   end 
   local function sendInfluxDB (e)
+    local device_name = devName(e.devNo)
+	device_name, _ = string.gsub(device_name, "[,= ]", "\\%1")
+	
     local req_url  = ("%s/write?db=%s&precision=ms"):format(InfluxDb.Url, InfluxDb.Database)
-    local req_body = ("%s,device_no=%d,service=%s %s=%s %s"):format(InfluxDb.Measurement, e.devNo, service or "?", e.name or 'value', e.var, math.floor(e.time * 1000))
+    local req_body = ("%s,device_no=%d,device_name=%s,service=%s %s=%s %s"):format(InfluxDb.Measurement, e.devNo, device_name, service or "?", e.name or 'value', e.var, math.floor(e.time * 1000))
     
     local res, code, response_headers, status = http.request{
         url = req_url,
